@@ -3,6 +3,7 @@ import type { Actor, CameraView, Prop, Scene } from '../types';
 import { applyPose, createFigure, disposeObject, type FigureRig } from './figure';
 import { PROP_MAP } from './props';
 import { evaluateActor, evaluateProp } from './evaluate';
+import { variantDef } from './variants';
 
 export const VIEW_HEIGHT = 9; // высота кадра в метрах при zoom = 1
 const SUN_OFFSET = new THREE.Vector3(2.5, 10, -6);
@@ -113,7 +114,7 @@ export class SceneRuntime {
       e.rig.root.position.set(st.x, st.y, st.z);
       e.rig.root.rotation.y = st.ry;
       e.rig.root.scale.setScalar(a.scale);
-      applyPose(e.rig, st.pose);
+      applyPose(e.rig, st.pose, st.odo);
     }
     for (const [id, e] of this.actors) {
       if (!seenA.has(id)) {
@@ -167,7 +168,7 @@ export class SceneRuntime {
     if (actor) {
       const st = evaluateActor(actor, t);
       this.selRing.position.set(st.x, st.y + 0.01, st.z);
-      this.selRing.scale.setScalar(0.42 * actor.scale);
+      this.selRing.scale.setScalar(variantDef(actor.variant).radius * actor.scale);
     } else if (prop) {
       const def = PROP_MAP[prop.kind];
       const ps = evaluateProp(prop, t, !!def?.vehicle);

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Actor, Prop, Scene } from './types';
 import { PROP_MAP } from './engine/props';
 import { evaluateActor, evaluateProp } from './engine/evaluate';
+import { variantDef } from './engine/variants';
 
 /**
  * Проверка сцены на пересечения во времени: люди, машины и «твёрдые» декорации.
@@ -9,7 +10,7 @@ import { evaluateActor, evaluateProp } from './engine/evaluate';
  */
 
 /** По этим предметам можно ходить и ездить. */
-const FLAT = new Set(['road', 'crosswalk', 'sidewalk', 'parking', 'rug', 'towel', 'pizza', 'phone', 'books', 'laptop', 'headphones', 'mug']);
+const FLAT = new Set(['road', 'crosswalk', 'sidewalk', 'parking', 'rug', 'towel', 'pizza', 'phone', 'books', 'laptop', 'headphones', 'mug', 'round_rug', 'pond', 'grass', 'pet_bed']);
 /** На этом можно сидеть/лежать — сидящий персонаж с ним не сталкивается. */
 const SEATS = new Set(['bench', 'chair', 'sofa', 'bus_stop', 'bed', 'beanbag']);
 const SIT_ACTIONS = new Set(['sit_floor', 'sit_hug', 'sit_lean', 'sit_chair', 'lie', 'kneel']);
@@ -129,10 +130,10 @@ export function checkScene(s: Scene, step = 0.05): Hit[] {
     // люди
     for (let i = 0; i < people.length; i++) {
       const P = people[i];
-      const r = R_ACTOR * P.a.scale;
+      const r = R_ACTOR * (variantDef(P.a.variant).radius / 0.42) * P.a.scale;
       for (let j = i + 1; j < people.length; j++) {
         const Q = people[j];
-        if (Math.hypot(P.st.x - Q.st.x, P.st.z - Q.st.z) < r + R_ACTOR * Q.a.scale) hit(t, P.a.name, Q.a.name);
+        if (Math.hypot(P.st.x - Q.st.x, P.st.z - Q.st.z) < r + R_ACTOR * (variantDef(Q.a.variant).radius / 0.42) * Q.a.scale) hit(t, P.a.name, Q.a.name);
       }
       for (const c of cars) if (circleHits(P.st.x, P.st.z, r, c.o)) hit(t, P.a.name, nameOf(c.p));
       for (const sr of solidRects) {

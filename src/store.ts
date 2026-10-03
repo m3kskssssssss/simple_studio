@@ -4,20 +4,16 @@ import type { Actor, Project, Scene, Selection } from './types';
 import { demoProject, normalizeProject } from './project';
 import { sceneAt, totalDuration } from './engine/evaluate';
 
-const STORAGE_KEY = 'simple-studio:project';
 const HISTORY_LIMIT = 150;
 
-function loadInitial(): Project {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return normalizeProject(JSON.parse(raw));
-  } catch {
-    /* ignore */
-  }
-  return demoProject();
-}
+export type SaveState = 'saved' | 'saving' | 'dirty';
 
 interface State {
+  /** Экран: стартовое меню проектов или редактор. */
+  view: 'home' | 'editor';
+  /** id открытого проекта в хранилище. */
+  projectId: string | null;
+  saveState: SaveState;
   project: Project;
   past: Project[];
   future: Project[];
@@ -35,6 +31,8 @@ interface State {
   undo: () => void;
   redo: () => void;
   replaceProject: (p: Project) => void;
+  openProject: (id: string, p: Project) => void;
+  goHome: () => void;
   select: (s: Selection | null) => void;
   seek: (t: number) => void;
   setTimeFromPlayback: (t: number) => void;
@@ -44,7 +42,10 @@ interface State {
 }
 
 export const useStore = create<State>((set, get) => ({
-  project: loadInitial(),
+  view: 'home',
+  projectId: null,
+  saveState: 'saved',
+  project: normalizeProject(demoProject()),
   past: [],
   future: [],
   selection: null,
@@ -80,6 +81,10 @@ export const useStore = create<State>((set, get) => ({
   replaceProject: (p) => {
     set({ project: normalizeProject(p), past: [], future: [], selection: null, time: 0, playing: false });
   },
+  openProject: (id, p) => {
+    set({ view: 'editor', projectId: id, saveState: 'saved', project: normalizeProject(p), past: [], future: [], selection: null, time: 0, playing: false });
+  },
+  goHome: () => set({ view: 'home', playing: false, selection: null }),
   select: (s) => set({ selection: s }),
   seek: (t) => {
     const max = totalDuration(get().project);
@@ -91,18 +96,36 @@ export const useStore = create<State>((set, get) => ({
   setPxPerSec: (v) => set({ pxPerSec: Math.min(Math.max(v, 15), 400) }),
 }));
 
-// автосохранение
+// ---------- автосохранение открытого проекта ----------
+
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
-useStore.subscribe((s, prev) => {
-  if (s.project === prev.project) return;
+/** Снимок кадра для превью (ставит Viewport). */
+export const thumbProvider: { current: (() => string | undefined) | null } = { current: null };
+
+/** Сохранить немедленно (например, при выходе в меню). */
+export async function saveNow(withThumb = true) {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(useStore.getState().project));
-    } catch {
-      /* квота */
-    }
-  }, 400);
+  const { projectId, project } = useStore.getState();
+  if (!projectId) return;
+  useStore.setState({ saveState: 'saving' });
+  let thumb: string | undefined;
+  try {
+    thumb = withThumb ? thumbProvider.current?.() : undefined;
+  } catch {
+    thumb = undefined;
+  }
+  const { saveProject } = await import('./projects');
+  await saveProject(projectId, project, thumb);
+  if (useStore.getState().project === project) useStore.setState({ saveState: 'saved' });
+}
+
+let thumbTick = 0;
+useStore.subscribe((s, prev) => {
+  if (s.project === prev.project || !s.projectId || s.projectId !== prev.projectId) return;
+  if (s.saveState !== 'dirty') useStore.setState({ saveState: 'dirty' });
+  clearTimeout(saveTimer);
+  // превью обновляем не на каждое сохранение — это дороже
+  saveTimer = setTimeout(() => void saveNow(++thumbTick % 4 === 1), 700);
 });
 
 /** Снять выделение, если объект исчез (после undo/удаления). */
@@ -129,6 +152,10 @@ export function findSelected(p: Project, s: Selection): unknown {
       return p.texts.find((x) => x.id === s.id);
     case 'audio':
       return p.audioClips.find((x) => x.id === s.id);
+    case 'overlay':
+      return p.overlays.find((x) => x.id === s.id);
+    case 'filter':
+      return p.filters.find((x) => x.id === s.id);
   }
 }
 

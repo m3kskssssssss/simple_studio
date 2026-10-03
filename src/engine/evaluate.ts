@@ -1,5 +1,9 @@
 import type { Actor, CameraView, MoveKey, Project, Prop, Scene } from '../types';
-import { ACTION_MAP, idlePose, lerpPose, walkPose, type Pose } from './poses';
+import type { FigureVariant } from '../types';
+import { ACTION_MAP, CANE_R, actionFits, armR, idlePose, lerpPose, walkPose, wheelPushArms, type Pose } from './poses';
+import { quadGait, quadIdle } from './animalPoses';
+import { quadSpec } from './animal';
+import { rigOf } from './variants';
 
 export const DEFAULT_CAMERA: CameraView = {
   target: [0, 0.6, 0],
@@ -80,6 +84,8 @@ export interface ActorState {
   z: number;
   ry: number;
   pose: Pose;
+  /** Пройденный путь, м (колёса коляски). */
+  odo: number;
 }
 
 const BLEND = 0.35;
@@ -166,24 +172,75 @@ export function evaluateProp(p: Prop, t: number, vehicle: boolean): PropState {
 }
 
 function basePose(a: Actor, t: number, m: Motion): Pose {
-  const idle = idlePose(t);
+  const v = a.variant;
+  if (rigOf(v) === 'quad') {
+    const idle = quadIdle(t, v);
+    if (m.moving <= 0) return idle;
+    const h = quadSpec(v).hipY;
+    const run = m.speed > Math.max(1.2, h * 3);
+    const cycle = m.walked / (run ? h * 4.2 : h * 2.4);
+    return lerpPose(idle, quadGait(cycle, v, run), m.moving);
+  }
+  if (v === 'wheelchair') {
+    // руки на ободах; на ходу — толчки (один на ~0.9 м)
+    const idle = { ...idlePose(t), ...wheelPushArms(0.25, 0) };
+    if (m.moving <= 0) return idle as Pose;
+    return lerpPose(idle as Pose, { ...idlePose(t), ...wheelPushArms(m.walked / 0.9) } as Pose, m.moving);
+  }
+  const old = v === 'oldman' || v === 'oldwoman';
+  let idle = idlePose(t);
+  if (v === 'oldman') idle = { ...idle, ...armR(CANE_R) };
   if (m.moving <= 0) return idle;
-  const run = m.speed > 2.4;
-  const cycle = run ? m.walked / 3.4 : m.walked / 1.25;
-  return lerpPose(idle, walkPose(cycle, run), m.moving);
+  const run = !old && m.speed > 2.4;
+  const cycle = run ? m.walked / 3.4 : m.walked / (old ? 0.9 : 1.25);
+  let walk = walkPose(cycle, run);
+  if (old) {
+    walk = lerpPose(idle, walk, 0.6);
+    if (v === 'oldman') walk = { ...walk, ...armR({ ...CANE_R, sx: CANE_R.sx! - 0.15 * Math.sin(cycle * Math.PI * 1.8) }) };
+  }
+  if (v === 'fat') walk = { ...walk, bz: walk.bz + 0.05 * Math.sin(cycle * Math.PI * 1.8) };
+  return lerpPose(idle, walk, m.moving);
 }
 
 const LEG_KEYS = ['y', 'by', 'lhx', 'lhy', 'lhz', 'lk', 'rhx', 'rhy', 'rhz', 'rk'] as const;
+const QUAD_LEG_KEYS = ['y', 'bx', 'bz', 'lsx', 'lsz', 'le', 'rsx', 'rsz', 're', 'lhx', 'lhz', 'lk', 'rhx', 'rhz', 'rk'] as const;
 
-function actionPose(type: string, t: number, speed: number, a?: Actor, now?: number, m?: Motion): Pose {
-  const def = ACTION_MAP[type] ?? ACTION_MAP.stand;
-  const p = def.fn(Math.max(0, t) * speed);
+function actionPose(type: string, t: number, speed: number, a: Actor, now: number, m: Motion): Pose {
+  const def = ACTION_MAP[type];
+  // анимация от другой модели (сменили фигуру) — просто стоим
+  if (!def || !actionFits(def, a.variant)) return basePose(a, now, m);
+  const p = def.fn(Math.max(0, t) * speed, a.variant);
   // жесты и эмоции — только верх тела: на ходу ноги продолжают шагать
-  if (a && m && m.moving > 0 && (def.group === 'Жесты' || def.group === 'Эмоции')) {
-    const walk = basePose(a, now!, m);
-    for (const k of LEG_KEYS) p[k] = p[k] + (walk[k] - p[k]) * m.moving;
+  if (m.moving > 0 && def.group !== 'Позы' && def.group !== 'Движение') {
+    const walk = basePose(a, now, m);
+    for (const k of rigOf(a.variant) === 'quad' ? QUAD_LEG_KEYS : LEG_KEYS) p[k] = p[k] + (walk[k] - p[k]) * m.moving;
   }
   return p;
+}
+
+/** Особенности телосложения поверх любой позы. */
+function applyVariant(v: FigureVariant, p: Pose): Pose {
+  switch (v) {
+    case 'wheelchair':
+      // сидит: ноги и таз неподвижны
+      return { ...p, y: -0.33, bx: 0, by: 0, bz: 0, bz2: 0, lhx: -Math.PI / 2, lhy: 0, lhz: 0.06, lk: Math.PI / 2 - 0.05, rhx: -Math.PI / 2, rhy: 0, rhz: -0.06, rk: Math.PI / 2 - 0.05 };
+    case 'oldman':
+    case 'oldwoman': {
+      // сутулость; лёжа — не нужна
+      const k = Math.max(0, 1 - Math.abs(p.bx));
+      return { ...p, tx: p.tx + 0.22 * k, hx: p.hx - 0.16 * k, lk: p.lk + 0.1 * k, rk: p.rk + 0.1 * k, lhx: p.lhx - 0.05 * k, rhx: p.rhx - 0.05 * k, y: p.y - 0.012 * k };
+    }
+    case 'fat':
+      return { ...p, lsz: p.lsz + 0.16, rsz: p.rsz - 0.16, lhz: p.lhz + 0.04, rhz: p.rhz - 0.04 };
+    default:
+      return p;
+  }
+}
+
+/** Поза покоя модели (для превью). */
+export function restPose(v: FigureVariant, t: number): Pose {
+  const m: Motion = { x: 0, y: 0, z: 0, ry: 0, moving: 0, speed: 0, walked: 0 };
+  return applyVariant(v, basePose({ variant: v } as Actor, t, m));
 }
 
 export function evaluateActor(a: Actor, t: number): ActorState {
@@ -224,7 +281,7 @@ export function evaluateActor(a: Actor, t: number): ActorState {
     cur = lerpPose(prev, cur, smooth(since / BLEND));
   }
 
-  return { x: m.x, y: m.y, z: m.z, ry: m.ry, pose: cur };
+  return { x: m.x, y: m.y, z: m.z, ry: m.ry, pose: applyVariant(a.variant, cur), odo: m.odo };
 }
 
 // ---------- камера ----------

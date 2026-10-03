@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { PROP_MAP } from './props';
 import { applyPose, createFigure, disposeObject } from './figure';
-import { idlePose } from './poses';
+import { restPose } from './evaluate';
 import type { FigureVariant } from '../types';
 
 /**
@@ -103,8 +103,9 @@ export function figureThumb(variant: FigureVariant, color: string): string {
   let url = cache.get(key);
   if (!url) {
     const rig = createFigure(variant, color);
-    rig.root.rotation.y = Math.PI / 4;
-    applyPose(rig, idlePose(0.8));
+    // животных — в профиль, людей — лицом
+    rig.root.rotation.y = Math.PI / 4 + (rig.kind === 'quad' ? 1.15 : 0);
+    applyPose(rig, restPose(variant, 0.8));
     url = shoot(rig.root);
     disposeObject(rig.root);
     cache.set(key, url);

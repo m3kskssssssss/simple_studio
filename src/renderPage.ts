@@ -8,12 +8,12 @@ const tpl = TEMPLATES.find((t) => t.name === (q.get('tpl') ?? 'Вечеринк�
 const w = Number(q.get('w') ?? 640);
 const h = Number(q.get('h') ?? 360);
 const scene = tpl.build();
-const project: Project = { version: 1, name: tpl.name, aspect: '16:9', fps: 30, scenes: [scene], texts: [], audioAssets: [], audioClips: [] };
+const project: Project = { version: 1, name: tpl.name, aspect: '16:9', fps: 30, scenes: [scene], texts: [], audioAssets: [], audioClips: [], mediaAssets: [], overlays: [], filters: [] };
 const fr = new FrameRenderer(project, w, h);
 document.body.appendChild(fr.out);
 const g = window as unknown as Record<string, unknown>;
 g.__duration = scene.duration;
-g.frame = (t: number) => {
-  fr.render(t);
+g.frame = async (t: number) => {
+  await fr.render(t);
   return fr.out.toDataURL('image/png');
 };

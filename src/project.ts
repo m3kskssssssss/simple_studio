@@ -3,6 +3,8 @@ import { DEFAULT_CAMERA } from './engine/evaluate';
 import { MAROON, NAVY } from './engine/palette';
 import { PROP_MAP } from './engine/props';
 import { ACTION_MAP } from './engine/poses';
+import { assignMissingTracks } from './tracks';
+import { variantDef } from './engine/variants';
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -16,7 +18,7 @@ export const ASPECTS: Record<Aspect, number> = {
 export function newActor(partial: Partial<Actor> = {}): Actor {
   return {
     id: uid(),
-    name: partial.variant === 'woman' ? 'Она' : 'Он',
+    name: variantDef(partial.variant ?? 'man').name,
     variant: 'man',
     color: NAVY,
     accessory: 'none',
@@ -39,6 +41,7 @@ export function newProp(kind: string, partial: Partial<Prop> = {}): Prop {
 export function newScene(name: string, partial: Partial<Scene> = {}): Scene {
   return {
     id: uid(),
+    kind: '3d',
     name,
     duration: 5,
     background: '#ffffff',
@@ -125,6 +128,9 @@ export function demoProject(): Project {
     ],
     audioAssets: [],
     audioClips: [],
+    mediaAssets: [],
+    overlays: [],
+    filters: [],
   };
 }
 
@@ -138,6 +144,9 @@ export function emptyProject(): Project {
     texts: [],
     audioAssets: [],
     audioClips: [],
+    mediaAssets: [],
+    overlays: [],
+    filters: [],
   };
 }
 
@@ -156,5 +165,10 @@ export function normalizeProject(p: Project): Project {
   p.texts ??= [];
   p.audioAssets ??= [];
   p.audioClips ??= [];
+  p.mediaAssets ??= [];
+  p.overlays ??= [];
+  p.filters ??= [];
+  p.trackMeta ??= { visual: {}, filter: {}, audio: {} };
+  assignMissingTracks(p as never);
   return p;
 }

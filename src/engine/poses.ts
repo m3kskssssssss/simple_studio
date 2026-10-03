@@ -1,30 +1,19 @@
-/**
- * Позы — плоский набор углов суставов (радианы).
- * Соглашения: персонаж смотрит в +Z, его левая сторона — +X.
- *  - плечо/бедро x < 0 — конечность вперёд; z — в сторону (для левой +, для правой −); y — скручивание
- *  - локоть < 0 — сгиб вперёд; колено > 0 — сгиб назад
- *  - торс/голова x > 0 — наклон вперёд
- */
-export const POSE_KEYS = [
-  'y', 'bz2', 'bx', 'by', 'bz',
-  'tx', 'ty', 'tz',
-  'hx', 'hy', 'hz',
-  'lsx', 'lsy', 'lsz', 'le',
-  'rsx', 'rsy', 'rsz', 're',
-  'lhx', 'lhy', 'lhz', 'lk',
-  'rhx', 'rhy', 'rhz', 'rk',
-] as const;
-export type PoseKey = (typeof POSE_KEYS)[number];
-export type Pose = Record<PoseKey, number>;
+import { ZERO, POSE_KEYS, type ActionDef, type Pose } from './poseKeys';
+import { ANIMAL_ACTIONS } from './animalPoses';
+import type { FigureVariant } from '../types';
+import { rigOf } from './variants';
 
-const REST: Pose = Object.fromEntries(POSE_KEYS.map((k) => [k, 0])) as Pose;
+export { POSE_KEYS, ZERO };
+export type { ActionDef, Pose, PoseKey } from './poseKeys';
+
+const REST: Pose = { ...ZERO };
 REST.lsz = 0.07;
 REST.rsz = -0.07;
 REST.le = -0.08;
 REST.re = -0.08;
 
 type Partial2 = Partial<Pose> & { arms?: Arm; legs?: Leg };
-interface Arm { sx?: number; sy?: number; sz?: number; e?: number }
+export interface Arm { sx?: number; sy?: number; sz?: number; e?: number }
 interface Leg { hx?: number; hy?: number; hz?: number; k?: number }
 
 /** Собрать позу; arms/legs задают обе стороны симметрично (в левосторонней записи). */
@@ -86,15 +75,6 @@ const pos = (v: number) => Math.max(0, v);
 // --- фрагменты поз ---
 const HAND_ON_HIP_L: Arm = { sx: 0.15, sy: -1.35, sz: 0.62, e: -1.75 };
 const SIT_FLOOR_Y = 0.1 - 0.78;
-
-export interface ActionDef {
-  id: string;
-  label: string;
-  icon: string;
-  group: 'Движение' | 'Жесты' | 'Эмоции' | 'Позы';
-  duration: number;
-  fn: (t: number) => Pose;
-}
 
 /** Цикл шага, t — «время ходьбы» (≈1.8 шага/с). */
 export function walkPose(t: number, run = false): Pose {
@@ -659,5 +639,122 @@ export const ACTIONS: ActionDef[] = [
   },
 ];
 
+// ---------- особые: коляска, пожилые, робот, толстяк, высокий ----------
+
+/** Руки на ободах колёс; g — фаза толчка 0..1. */
+export function wheelPushArms(g: number, amt = 1): Partial<Pose> {
+  const c = C(g * PI * 2);
+  const s = S(g * PI * 2);
+  const arm: Arm = { sx: -0.15 + 0.45 * c * amt, sy: -0.2, sz: 0.3 + 0.04 * s, e: -0.75 + 0.35 * pos(-c) * amt };
+  return { ...armL(arm), ...armR(arm), tx: 0.1 + 0.12 * pos(-c) * amt, hx: -0.05 - 0.08 * pos(-c) * amt };
+}
+
+export const CANE_R: Arm = { sx: -0.32, sy: 0, sz: 0.12, e: -0.45 };
+
+ACTIONS.push(
+  {
+    id: 'wc_push', label: 'Катиться на месте', icon: '♿', group: 'Особые', duration: 3, only: ['wheelchair'],
+    fn: (t) => P({ ...wheelPushArms(t * 0.9), whl: t * 3.2, hy: 0.15 * S(t * 0.6) }),
+  },
+  {
+    id: 'wc_wheelie', label: 'На задних колёсах', icon: '🛞', group: 'Особые', duration: 3, only: ['wheelchair'],
+    fn: (t) => {
+      const k = smoothBump(t % 3, 0.15, 2.85);
+      const bal = 0.05 * S(t * 3.1) * k;
+      return P({ rx: -0.42 * k + bal, ...wheelPushArms(0.15, 0.3), tx: 0.18 * k, hx: -0.15 * k, whl: -bal * 2, ...armR({ sx: -0.1, sz: 0.32, e: -0.7 - 0.2 * S(t * 3.1) }) });
+    },
+  },
+  {
+    id: 'wc_spin', label: 'Кружиться', icon: '🌀', group: 'Особые', duration: 3, only: ['wheelchair'],
+    fn: (t) => {
+      const a = t * 2.4;
+      return P({ ry2: a, wd: a * 0.55, ...armL({ sx: -0.05, sz: 0.3, e: -0.7 - 0.25 * S(t * 6) }), ...armR({ sx: -2.4, sz: 0.35, e: -0.2 }), hx: -0.25, tz: -0.08, hz: 0.1 });
+    },
+  },
+  {
+    id: 'old_cane', label: 'Грозить тростью', icon: '🦯', group: 'Особые', duration: 2.5, only: ['oldman'],
+    fn: (t) => {
+      const sh = S(t * 11);
+      return P({ ...stance(t, 0.3), grip: 1, ...armR({ sx: -2.1 + 0.18 * sh, sy: 0.2, sz: 0.25, e: -0.55 - 0.25 * sh }), ...armL({ sx: 0.1, sz: 0.15, e: -0.3 }), hx: -0.2 + 0.06 * sh, tx: -0.05, hz: 0.06 * S(t * 3), y: -0.01 });
+    },
+  },
+  {
+    id: 'old_back', label: 'Болит спина', icon: '😩', group: 'Особые', duration: 3, only: ['oldman', 'oldwoman'],
+    fn: (t) => {
+      const ow = pos(S(t * 1.6)) ** 2;
+      return P({ ...stance(t * 0.6, 0.3), ...armL({ sx: 0.55, sy: -1.2, sz: 0.4, e: -1.6 }), ...armR({ sx: 0.55, sy: -1.2, sz: 0.4, e: -1.6 }), tx: 0.3 + 0.08 * ow, tz: 0.06 * S(t * 0.8), hx: -0.25 - 0.1 * ow, hz: 0.1 * ow, legs: { k: 0.12 } });
+    },
+  },
+  {
+    id: 'old_scold', label: 'Отчитывать', icon: '☝️', group: 'Особые', duration: 2.5, only: ['oldwoman', 'oldman'],
+    fn: (t) => {
+      const w = S(t * 9);
+      return P({ ...stance(t, 0.4), ...armR({ sx: -1.0, sy: 0.6, sz: 0.55, e: -1.55 + 0.2 * w }), ...armL(HAND_ON_HIP_L), tx: 0.12, hx: 0.05 + 0.05 * S(t * 4.5), hz: 0.12 * S(t * 2.2), ty: -0.12 });
+    },
+  },
+  {
+    id: 'robot_dance', label: 'Робо-танец', icon: '🤖', group: 'Особые', duration: 4, only: ['robot'],
+    fn: (t) => {
+      // движения рывками: фаза «защёлкивается» на долях
+      const beat = Math.floor(t * 4);
+      const step = (n: number) => [0, 1, 0, -1][(beat + n) % 4];
+      const a = step(0), b = step(1);
+      return P({
+        ...armL({ sx: -H * pos(a), sz: 0.1 + H * pos(-a), e: -H * pos(b) }),
+        ...armR({ sx: -H * pos(-a), sz: 0.1 + H * pos(a), e: -H * pos(-b) }),
+        hy: 0.5 * b, ty: 0.25 * a, tz: 0.1 * b,
+        ...crouch(0.2 + 0.12 * Math.abs(a)),
+      });
+    },
+  },
+  {
+    id: 'robot_scan', label: 'Сканировать', icon: '📡', group: 'Особые', duration: 3, only: ['robot'],
+    fn: (t) => P({ arms: { sz: 0.12, e: -0.15 }, hy: 1.3 * S(t * 1.4), hx: 0.12 * S(t * 4.3), ty: 0.3 * S(t * 1.4 - 0.4), ...armR({ sx: -1.45, sz: 0.1, sy: 1.6 * S(t * 1.4), e: -0.1 }) }),
+  },
+  {
+    id: 'robot_glitch', label: 'Сбой', icon: '⚡', group: 'Особые', duration: 2.5, only: ['robot'],
+    fn: (t) => {
+      const j = (k: number) => S(Math.floor(t * 14) * 12.9898 + k * 78.233) * 0.5;
+      return P({ ...stance(t, 0.2), hy: 0.6 * j(1), hz: 0.5 * j(2), hx: 0.3 * j(3), tz: 0.15 * j(4), ...armL({ sx: -0.8 * pos(j(5)) - 0.1, sz: 0.2 + 0.6 * pos(j(6)), e: -1.2 * pos(j(7)) }), ...armR({ sx: -0.6 * pos(j(8)), sz: 0.15 + 0.5 * pos(j(9)), e: -1.0 * pos(j(10)) }), legs: { k: 0.15 * pos(j(11)) } });
+    },
+  },
+  {
+    id: 'robot_off', label: 'Выключиться', icon: '🔌', group: 'Особые', duration: 3, only: ['robot'],
+    fn: (t) => {
+      const k = smoothBump(t, 0.2, 5.6) * (t < 2.9 ? 1 : 1);
+      const d = Math.min(1, Math.max(0, (t - 0.3) / 0.9));
+      const e = d * d;
+      return P({ tx: 0.55 * e, hx: 0.7 * e, arms: { sx: -0.3 * e, sz: 0.06, e: -0.1 }, ...crouch(0.35 * e), hz: 0.1 * e * k });
+    },
+  },
+  {
+    id: 'fat_belly', label: 'Погладить живот', icon: '😋', group: 'Особые', duration: 3, only: ['fat'],
+    fn: (t) => {
+      const r = t * 4;
+      return P({ ...stance(t, 0.6), ...armR({ sx: -0.55 + 0.12 * S(r), sy: -0.9, sz: 0.4 + 0.08 * C(r), e: -1.25 }), ...armL({ sx: -0.35, sy: -1.0, sz: 0.38, e: -1.1 }), tx: -0.12, hx: -0.15 + 0.05 * S(t * 2), hz: 0.12 * S(t * 1.1) });
+    },
+  },
+  {
+    id: 'tall_reach', label: 'Достать сверху', icon: '🙌', group: 'Особые', duration: 3, only: ['tall'],
+    fn: (t) => {
+      const k = smoothBump(t % 3, 0.2, 2.8);
+      const f = S(t * 8) * k;
+      return P({ ...armR({ sx: -2.9 * k, sz: 0.15, e: -0.1 - 0.25 * f }), ...armL({ sz: 0.1 + 0.2 * k, e: -0.2 }), hx: -0.45 * k, tx: -0.08 * k, y: 0.05 * k, tz: 0.05 * k });
+    },
+  },
+);
+
+/** Сидящий в коляске не ходит ногами и не садится на пол. */
+const NO_CHAIR = ['walk', 'run', 'jump', 'squat', 'kick', 'sit_floor', 'sit_hug', 'sit_lean', 'sit_chair', 'kneel', 'lie', 'stand'];
+for (const a of ACTIONS) if (NO_CHAIR.includes(a.id)) a.not = ['wheelchair'];
+
+ACTIONS.push(...ANIMAL_ACTIONS);
+
 export const ACTION_MAP: Record<string, ActionDef> = Object.fromEntries(ACTIONS.map((a) => [a.id, a]));
-export const ACTION_GROUPS = ['Жесты', 'Эмоции', 'Движение', 'Позы'] as const;
+export const ACTION_GROUPS = ['Особые', 'Жесты', 'Эмоции', 'Движение', 'Позы'] as const;
+
+/** Подходит ли анимация к модели. */
+export function actionFits(a: ActionDef, v: FigureVariant) {
+  return (a.rig ?? 'human') === rigOf(v) && (!a.only || a.only.includes(v)) && !a.not?.includes(v);
+}
+export const actionsFor = (v: FigureVariant) => ACTIONS.filter((a) => actionFits(a, v));

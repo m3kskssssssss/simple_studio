@@ -13,7 +13,9 @@ import type { Project } from '../types';
 import { SceneRuntime, applyView, makeCamera, setCameraAspect } from '../engine/runtime';
 import { evaluateCamera, sceneAt, totalDuration } from '../engine/evaluate';
 import { drawOverlay } from '../engine/overlay';
-import { scheduleClips } from '../audio/audio';
+import { allAudioClips, scheduleClips } from '../audio/audio';
+import { seekVideosExact, waitMediaReady } from '../engine/media';
+import { ensureFonts } from '../engine/fonts';
 
 export interface ExportOptions {
   width: number;
@@ -52,14 +54,20 @@ export class FrameRenderer {
     this.ctx = this.out.getContext('2d')!;
   }
 
-  render(t: number) {
+  /** Кадр в момент t; exact — дождаться точной перемотки видео (покадровый экспорт). */
+  async render(t: number, exact = true) {
     const at = sceneAt(this.project, t);
-    this.runtime.sync(at.scene, at.local, { helpers: false });
-    applyView(this.cam, evaluateCamera(at.scene, at.local), this.target);
-    this.runtime.setShadowFocus(this.target);
-    this.renderer.render(this.runtime.scene, this.cam);
-    this.ctx.drawImage(this.gl, 0, 0);
-    drawOverlay(this.ctx, this.project, t, this.w, this.h);
+    const is3d = at.index >= 0 && at.scene.kind !== 'blank';
+    if (is3d) {
+      this.runtime.sync(at.scene, at.local, { helpers: false });
+      applyView(this.cam, evaluateCamera(at.scene, at.local), this.target);
+      this.runtime.setShadowFocus(this.target);
+      this.renderer.render(this.runtime.scene, this.cam);
+    }
+    if (exact) await seekVideosExact(this.project, t);
+    this.ctx.fillStyle = '#000';
+    this.ctx.fillRect(0, 0, this.w, this.h);
+    drawOverlay(this.ctx, this.project, t, this.w, this.h, { base: is3d ? this.gl : null });
   }
 
   dispose() {
@@ -70,10 +78,10 @@ export class FrameRenderer {
 
 /** Свести все аудиоклипы в один AudioBuffer. */
 async function mixAudio(p: Project, duration: number): Promise<AudioBuffer | null> {
-  if (!p.audioClips.length) return null;
+  if (!allAudioClips(p).length) return null;
   const sr = 48000;
   const ctx = new OfflineAudioContext(2, Math.ceil(duration * sr), sr);
-  scheduleClips(ctx, ctx.destination, p.audioClips, 0, 0, duration);
+  scheduleClips(ctx, ctx.destination, allAudioClips(p), 0, 0, duration);
   return ctx.startRendering();
 }
 
@@ -84,6 +92,7 @@ export async function exportVideo(
   signal: AbortSignal,
 ): Promise<ExportResult> {
   const duration = totalDuration(project);
+  await Promise.all([ensureFonts(project), waitMediaReady(project)]);
   const fr = new FrameRenderer(project, opts.width, opts.height);
   try {
     const webcodecs = typeof VideoEncoder !== 'undefined';
@@ -128,7 +137,7 @@ async function exportWithWebCodecs(
       throw new DOMException('Отменено', 'AbortError');
     }
     const t = i / opts.fps;
-    fr.render(t);
+    await fr.render(t);
     await video.add(t, 1 / opts.fps);
     if (i % 3 === 0) {
       onProgress(i / frames, fr.out);
@@ -163,15 +172,15 @@ async function exportRealtime(
   rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   const done = new Promise<void>((r) => (rec.onstop = () => r()));
 
-  fr.render(0);
+  await fr.render(0);
   rec.start(250);
   const t0 = ac.currentTime + 0.05;
-  const sched = scheduleClips(ac, dest, project.audioClips, 0, t0, duration);
+  const sched = scheduleClips(ac, dest, allAudioClips(project), 0, t0, duration);
   await new Promise<void>((resolve) => {
     const tick = () => {
       const t = ac.currentTime - t0;
       if (signal.aborted || t >= duration) return resolve();
-      fr.render(Math.max(0, t));
+      void fr.render(Math.max(0, t), false);
       onProgress(t / duration, fr.out);
       requestAnimationFrame(tick);
     };

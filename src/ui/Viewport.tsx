@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { EditorEngine } from './editorEngine';
-import { useStore } from '../store';
+import { thumbProvider, useStore } from '../store';
 import { DRAG_MIME, type DragPayload } from './Library';
 import { addActor, addAudioClipFromAsset, addCameraKey, addProp } from '../ops';
 import { DEFAULT_CAMERA } from '../engine/evaluate';
+import { variantDef } from '../engine/variants';
 import type { CameraView } from '../types';
 
 export const engineRef: { current: EditorEngine | null } = { current: null };
@@ -37,7 +38,9 @@ export function Viewport() {
     eng.onFrame = setFrame;
     setFrame(eng.frame);
     engineRef.current = eng;
+    thumbProvider.current = () => eng.snapshot();
     return () => {
+      thumbProvider.current = null;
       eng.dispose();
       engineRef.current = null;
     };
@@ -58,7 +61,7 @@ export function Viewport() {
     const d = JSON.parse(raw) as DragPayload;
     const p = engineRef.current?.floorPoint(e);
     const at = p ? { x: p.x, z: p.z } : undefined;
-    if (d.type === 'actor') addActor({ variant: d.variant, color: d.color, accessory: d.accessory, name: d.variant === 'woman' ? 'Она' : 'Он' }, at);
+    if (d.type === 'actor') addActor({ variant: d.variant, color: d.color, accessory: d.accessory, name: variantDef(d.variant).name }, at);
     else if (d.type === 'prop') addProp(d.kind, at);
     else if (d.type === 'audio') addAudioClipFromAsset(d.assetId);
   };

@@ -15,11 +15,12 @@ export interface PropDef {
   build: (color: string) => THREE.Group;
 }
 
-export type PropCat = 'Дом' | 'Улица' | 'Транспорт';
-export const PROP_CATS: PropCat[] = ['Транспорт', 'Улица', 'Дом'];
+export type PropCat = 'Дом' | 'Улица' | 'Природа' | 'Транспорт';
+export const PROP_CATS: PropCat[] = ['Дом', 'Природа', 'Улица', 'Транспорт'];
 
 import { add, box, cyl, lathe, mat, mix, rbox, shade } from './geo';
 import { STREET_PROPS } from './streetProps';
+import { DECOR_PROPS } from './decorProps';
 
 /** Лист растения: вытянутая форма, изогнутая дугой. */
 function leafGeometry(len: number, width: number, bend: number) {
@@ -431,6 +432,8 @@ export const PROPS: PropDef[] = [
   },
 ];
 
-PROPS.push(...STREET_PROPS);
+PROPS.push(...STREET_PROPS, ...DECOR_PROPS);
+// деревья и кусты — в «Природе»
+for (const p of PROPS) if (p.kind === 'tree' || p.kind === 'bush') p.cat = 'Природа';
 
 export const PROP_MAP: Record<string, PropDef> = Object.fromEntries(PROPS.map((p) => [p.kind, p]));

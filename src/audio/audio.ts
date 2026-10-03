@@ -1,36 +1,31 @@
 import type { AudioClip, Project } from '../types';
+import { idbGet, idbPut } from '../db';
 
-// ---------- IndexedDB для аудиофайлов ----------
-
-const DB_NAME = 'simple-studio';
-const STORE = 'audio';
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+/** Все звучащие клипы: аудио + звук видео-наложений. */
+export function allAudioClips(p: Project): AudioClip[] {
+  const fromVideo = (p.overlays ?? [])
+    .filter((o) => o.type === 'media' && o.volume > 0 && p.mediaAssets.find((m) => m.id === o.assetId)?.type === 'video')
+    .map((o) => ({ id: o.id, assetId: o.assetId!, name: '', start: o.start, offset: o.offset, duration: o.duration, volume: o.volume, fadeIn: 0, fadeOut: 0 }));
+  const meta = p.trackMeta;
+  return [
+    ...p.audioClips.filter((c) => !meta?.audio?.[c.track ?? 0]?.muted),
+    // звук видео глушится вместе со скрытой/заглушённой визуальной дорожкой
+    ...fromVideo.filter((c) => {
+      const o = p.overlays.find((x) => x.id === c.id);
+      const f = meta?.visual?.[o?.track ?? 0];
+      return !f?.hidden && !f?.muted;
+    }),
+  ];
 }
 
+// ---------- файлы в IndexedDB ----------
+
 export async function putAudioBlob(id: string, blob: Blob) {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(blob, id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  await idbPut('audio', id, blob);
 }
 
 export async function getAudioBlob(id: string): Promise<Blob | undefined> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = db.transaction(STORE).objectStore(STORE).get(id);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  return idbGet<Blob>('audio', id);
 }
 
 // ---------- декодирование и кэш ----------
@@ -64,7 +59,8 @@ export async function decodeAndCache(id: string, blob: Blob): Promise<AudioBuffe
 
 /** Подгрузить буферы всех ассетов проекта из IndexedDB. */
 export function ensureBuffers(p: Project) {
-  for (const a of p.audioAssets) {
+  const ids = [...p.audioAssets, ...(p.mediaAssets ?? []).filter((m) => m.type === 'video')];
+  for (const a of ids) {
     if (buffers.has(a.id) || loading.has(a.id)) continue;
     const job = getAudioBlob(a.id)
       .then((b) => (b ? decodeAndCache(a.id, b) : undefined))

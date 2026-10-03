@@ -6,9 +6,25 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "app": "vite build && electron .",
+    "exe": "vite build && electron-builder --win portable"
   },
   "dependencies": {
+    "@fontsource/amatic-sc": "^5.3.0",
+    "@fontsource/caveat": "^5.3.0",
+    "@fontsource/comfortaa": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/lobster": "^5.3.0",
+    "@fontsource/montserrat": "^5.3.0",
+    "@fontsource/oswald": "^5.3.0",
+    "@fontsource/playfair-display": "^5.3.0",
+    "@fontsource/press-start-2p": "^5.3.0",
+    "@fontsource/pt-serif": "^5.3.0",
+    "@fontsource/rubik": "^5.3.0",
+    "@fontsource/russo-one": "^5.3.0",
+    "@fontsource/unbounded": "^5.3.0",
     "immer": "^11.1.21",
     "mediabunny": "^1.61.0",
     "react": "^19.3.0",
@@ -21,7 +37,42 @@
     "@types/react-dom": "^19.3.0",
     "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.2"
+  },
+  "main": "electron/main.cjs",
+  "description": "Студия мини-роликов с изометрическими человечками",
+  "author": "Simple Studio",
+  "build": {
+    "appId": "local.simplestudio.app",
+    "productName": "Simple Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "build/icon.png",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "Simple Studio.exe"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "electronVersion": "44.5.1"
   }
 }

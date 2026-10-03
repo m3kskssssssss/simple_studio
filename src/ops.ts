@@ -1,7 +1,9 @@
 import type { Draft } from 'immer';
-import type { Actor, AudioClip, CameraView, MoveKey, Project, Prop, Scene, TextClip } from './types';
+import type { Actor, AudioClip, CameraView, FilterClip, FilterKind, MoveKey, Overlay, Project, Prop, Scene, TextClip } from './types';
+import { importMediaFile } from './engine/media';
+import { compactTracks, freeTrack, groupItems, groupOf, insertTrack, placeClip, trackBusy, trackCount } from './tracks';
 import { actorDraft, currentSceneInfo, sceneOfDraft, sortActor, useStore } from './store';
-import { newActor, newProp, newScene, uid } from './project';
+import { ASPECTS, newActor, newProp, newScene, uid } from './project';
 import { ACTION_MAP } from './engine/poses';
 import { PROP_MAP } from './engine/props';
 import { evaluateActor, evaluateCamera, evaluateProp, sceneStart, totalDuration } from './engine/evaluate';
@@ -74,6 +76,12 @@ export function deleteSelection() {
       case 'audio':
         p.audioClips = p.audioClips.filter((x) => x.id !== sel.id);
         break;
+      case 'overlay':
+        p.overlays = p.overlays.filter((x) => x.id !== sel.id);
+        break;
+      case 'filter':
+        p.filters = p.filters.filter((x) => x.id !== sel.id);
+        break;
       case 'scene':
         p.scenes = p.scenes.filter((s) => s.id !== sel.id);
         break;
@@ -81,6 +89,8 @@ export function deleteSelection() {
   });
   if (sel.kind === 'action' || sel.kind === 'movekey') st().select({ kind: 'actor', id: sel.actorId });
   else st().select(null);
+  const g = groupOf(sel.kind);
+  if (g) st().edit((p) => compactTracks(p, g), { history: false });
   if (sel.kind === 'scene') st().seek(st().time); // плейхед не должен остаться за концом ролика
 }
 
@@ -127,8 +137,21 @@ export function duplicateSelection() {
     } else if (sel.kind === 'text') {
       const t = p.texts.find((x) => x.id === sel.id)!;
       const c = { ...t, id: uid(), start: t.start + t.duration };
+      c.track = freeTrack(p, 'visual', c.start, c.duration, t.track ?? 0);
       p.texts.push(c);
       newSel = { kind: 'text', id: c.id };
+    } else if (sel.kind === 'overlay') {
+      const o = p.overlays.find((x) => x.id === sel.id)!;
+      const c = { ...o, id: uid(), x: Math.min(0.95, o.x + 0.05), y: Math.min(0.95, o.y + 0.05) };
+      c.track = freeTrack(p, 'visual', c.start, c.duration, (o.track ?? 0) + 1);
+      p.overlays.push(c);
+      newSel = { kind: 'overlay', id: c.id };
+    } else if (sel.kind === 'filter') {
+      const f = p.filters.find((x) => x.id === sel.id)!;
+      const c = { ...f, id: uid(), start: f.start + f.duration };
+      c.track = freeTrack(p, 'filter', c.start, c.duration, f.track ?? 0);
+      p.filters.push(c);
+      newSel = { kind: 'filter', id: c.id };
     }
   });
   if (newSel) st().select(newSel);
@@ -314,6 +337,7 @@ export function addText() {
     size: 1,
   };
   st().edit((p) => {
+    c.track = freeTrack(p, 'visual', c.start, c.duration);
     p.texts.push(c);
   });
   st().select({ kind: 'text', id: c.id });
@@ -336,6 +360,7 @@ export async function importAudio(file: File) {
   };
   st().edit((p) => {
     p.audioAssets.push({ id, name: file.name, duration: buf.duration });
+    clip.track = freeTrack(p, 'audio', clip.start, clip.duration);
     p.audioClips.push(clip);
   });
   st().select({ kind: 'audio', id: clip.id });
@@ -356,6 +381,7 @@ export function addAudioClipFromAsset(assetId: string) {
     fadeOut: 0,
   };
   st().edit((p) => {
+    clip.track = freeTrack(p, 'audio', clip.start, clip.duration);
     p.audioClips.push(clip);
   });
   st().select({ kind: 'audio', id: clip.id });
@@ -379,6 +405,17 @@ export function splitAtPlayhead() {
       if (!c || t <= c.start + 0.05 || t >= c.start + c.duration - 0.05) return;
       p.texts.push({ ...c, id: uid(), start: t, duration: c.start + c.duration - t });
       c.duration = t - c.start;
+    } else if (sel.kind === 'overlay') {
+      const c = p.overlays.find((x) => x.id === sel.id);
+      if (!c || t <= c.start + 0.05 || t >= c.start + c.duration - 0.05) return;
+      const left = t - c.start;
+      p.overlays.push({ ...c, id: uid(), start: t, offset: c.offset + left, duration: c.duration - left });
+      c.duration = left;
+    } else if (sel.kind === 'filter') {
+      const c = p.filters.find((x) => x.id === sel.id);
+      if (!c || t <= c.start + 0.05 || t >= c.start + c.duration - 0.05) return;
+      p.filters.push({ ...c, id: uid(), start: t, duration: c.start + c.duration - t });
+      c.duration = t - c.start;
     } else if (sel.kind === 'action') {
       const a = actorDraft(p, sel.actorId);
       const c = a?.actions.find((x) => x.id === sel.id);
@@ -389,4 +426,155 @@ export function splitAtPlayhead() {
       sortActor(a);
     }
   });
+}
+
+// ---------- пустой кадр, медиа, стикеры, фильтры ----------
+
+/** Пустой кадр без 3D — фон для фото, видео и текста (как в CapCut). */
+export function addBlankScene(color = '#111111') {
+  const info = currentSceneInfo();
+  const s = newScene(`Кадр ${st().project.scenes.length + 1}`, { kind: 'blank', background: color, floor: color, duration: 4 });
+  st().edit((p) => {
+    p.scenes.splice(info.index + 1, 0, s);
+  });
+  st().seek(sceneStart(st().project, s.id) + 0.001);
+  st().select({ kind: 'scene', id: s.id });
+}
+
+/** Длительность нового клипа: до конца ролика, но не меньше 1 с. */
+const clipLen = (want: number) => Math.max(1, Math.min(want, totalDuration(st().project) - st().time || want));
+
+export async function importMedia(file: File) {
+  const id = uid();
+  const asset = await importMediaFile(id, file);
+  st().edit((p) => {
+    p.mediaAssets.push(asset);
+  });
+  addMediaOverlay(id);
+}
+
+export function addMediaOverlay(assetId: string) {
+  const asset = st().project.mediaAssets.find((a) => a.id === assetId);
+  if (!asset) return;
+  const p0 = st().project;
+  const aspect = ASPECTS[p0.aspect];
+  // по умолчанию — вписать в кадр
+  const fit = Math.min(1, (asset.width / Math.max(1, asset.height)) / aspect);
+  const o: Overlay = {
+    id: uid(), type: 'media', assetId, start: st().time,
+    duration: asset.type === 'video' ? Math.max(0.5, Math.min(asset.duration, clipLen(asset.duration))) : clipLen(3),
+    offset: 0, x: 0.5, y: 0.5, scale: fit, rotation: 0, opacity: 1, volume: 1, anim: 'none',
+  };
+  st().edit((p) => {
+    o.track = freeTrack(p, 'visual', o.start, o.duration);
+    p.overlays.push(o);
+  });
+  st().select({ kind: 'overlay', id: o.id });
+}
+
+export function addSticker(sticker: string) {
+  const o: Overlay = {
+    id: uid(), type: 'sticker', sticker, start: st().time, duration: clipLen(2.5), offset: 0,
+    x: 0.5 + (Math.random() - 0.5) * 0.3, y: 0.4 + (Math.random() - 0.5) * 0.2, scale: 0.16, rotation: 0, opacity: 1, volume: 0, anim: 'pop',
+  };
+  st().edit((p) => {
+    o.track = freeTrack(p, 'visual', o.start, o.duration);
+    p.overlays.push(o);
+  });
+  st().select({ kind: 'overlay', id: o.id });
+}
+
+export function addFilter(filter: FilterKind, whole = false) {
+  const total = totalDuration(st().project);
+  const f: FilterClip = whole
+    ? { id: uid(), filter, start: 0, duration: Math.max(1, total), amount: 1 }
+    : { id: uid(), filter, start: st().time, duration: clipLen(3), amount: 1 };
+  st().edit((p) => {
+    f.track = freeTrack(p, 'filter', f.start, f.duration);
+    p.filters.push(f);
+  });
+  st().select({ kind: 'filter', id: f.id });
+}
+
+// ---------- копировать / вставить клипы ----------
+
+type ClipCopy =
+  | { kind: 'text'; data: TextClip }
+  | { kind: 'overlay'; data: Overlay }
+  | { kind: 'filter'; data: FilterClip }
+  | { kind: 'audio'; data: AudioClip };
+let clipboard: ClipCopy | null = null;
+
+export function copySelection() {
+  const s = st();
+  const sel = s.selection;
+  if (!sel) return false;
+  const p = s.project;
+  const find = <T extends { id: string }>(arr: T[]) => JSON.parse(JSON.stringify(arr.find((x) => x.id === sel.id))) as T;
+  if (sel.kind === 'text') clipboard = { kind: 'text', data: find(p.texts) };
+  else if (sel.kind === 'overlay') clipboard = { kind: 'overlay', data: find(p.overlays) };
+  else if (sel.kind === 'filter') clipboard = { kind: 'filter', data: find(p.filters) };
+  else if (sel.kind === 'audio') clipboard = { kind: 'audio', data: find(p.audioClips) };
+  else return false;
+  return true;
+}
+
+/** Вставить скопированный клип в позицию плейхеда (на свободную дорожку). */
+export function pasteClip() {
+  if (!clipboard) return false;
+  const cb = clipboard;
+  const t = st().time;
+  const id = uid();
+  st().edit((p) => {
+    if (cb.kind === 'text') {
+      const c = { ...cb.data, id, start: t };
+      c.track = freeTrack(p, 'visual', c.start, c.duration, cb.data.track ?? 0);
+      p.texts.push(c);
+    } else if (cb.kind === 'overlay') {
+      const c = { ...cb.data, id, start: t };
+      c.track = freeTrack(p, 'visual', c.start, c.duration, cb.data.track ?? 0);
+      p.overlays.push(c);
+    } else if (cb.kind === 'filter') {
+      const c = { ...cb.data, id, start: t };
+      c.track = freeTrack(p, 'filter', c.start, c.duration, cb.data.track ?? 0);
+      p.filters.push(c);
+    } else {
+      const c = { ...cb.data, id, start: t };
+      c.track = freeTrack(p, 'audio', c.start, c.duration, cb.data.track ?? 0);
+      p.audioClips.push(c);
+    }
+  });
+  st().select({ kind: cb.kind, id } as never);
+  return true;
+}
+
+/** Переложить выбранный клип на дорожку выше/ниже (выше — поверх в кадре). Занято — появится новая дорожка. */
+export function moveSelectionTrack(delta: 1 | -1) {
+  const sel = st().selection;
+  if (!sel) return false;
+  const g = groupOf(sel.kind);
+  if (!g) return false;
+  st().edit((p) => {
+    const it = groupItems(p, g).find((x) => x.id === sel.id);
+    if (!it) return;
+    const cur = it.track ?? 0;
+    const n = trackCount(p, g);
+    if (delta > 0) {
+      // на верхней дорожке — создать новую сверху
+      if (cur >= n - 1) {
+        it.track = n;
+      } else placeClip(p, g, it.id, it.start, cur + 1);
+    } else {
+      if (cur === 0) {
+        insertTrack(p, g, 0);
+        it.track = 0;
+      } else if (trackBusy(p, g, cur - 1, it.start, it.duration, it.id)) {
+        // нижняя занята — новая дорожка под ней
+        insertTrack(p, g, cur - 1);
+        it.track = cur - 1;
+      } else it.track = cur - 1;
+    }
+    compactTracks(p, g);
+  });
+  return true;
 }

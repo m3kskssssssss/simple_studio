@@ -1,15 +1,20 @@
 import type { Draft } from 'immer';
 import { useState, type ReactNode } from 'react';
 import { actorDraft, findSelected, sceneOfDraft, sortActor, useStore } from '../store';
-import type { Actor, ActionClip, AudioClip, CameraKey, MoveKey, Project, Prop, Scene, TextClip } from '../types';
-import { ACTIONS, ACTION_GROUPS, ACTION_MAP } from '../engine/poses';
+import type { Actor, FigureVariant, ActionClip, AudioClip, CameraKey, FilterClip, FilterKind, MoveKey, Overlay, OverlayAnim, Project, Prop, Scene, TextAnim, TextClip } from '../types';
+import { ACTIONS, ACTION_GROUPS, ACTION_MAP, actionFits, actionsFor } from '../engine/poses';
+import { VARIANTS } from '../engine/variants';
 import { PROP_MAP } from '../engine/props';
 import { SWATCHES } from '../engine/palette';
-import { evaluateActor, evaluateProp, sceneAt, sceneStart } from '../engine/evaluate';
-import { addActionAtPlayhead, addScene, addCameraKey, deleteSelection, duplicateSelection, moveScene, writeActorTransform, writePropTransform } from '../ops';
+import { evaluateActor, evaluateProp, sceneAt, sceneStart, totalDuration } from '../engine/evaluate';
+import { addActionAtPlayhead, addScene, addCameraKey, moveSelectionTrack, deleteSelection, duplicateSelection, moveScene, writeActorTransform, writePropTransform } from '../ops';
 import { engineRef } from './Viewport';
 import { FigureIcon } from './Library';
 import { propThumb } from '../engine/thumbs';
+import { DEFAULT_FONT, FONTS } from '../engine/fonts';
+import { FILTERS, FILTER_MAP } from '../engine/filters';
+import { STICKER_MAP } from '../engine/stickers';
+import { ASPECTS } from '../project';
 
 const st = () => useStore.getState();
 const edit = (fn: (p: Draft<Project>) => void) => st().edit(fn);
@@ -107,13 +112,27 @@ function Title({ chip, title, children }: { chip: string; title: string; childre
 }
 
 function Footer({ dup = true }: { dup?: boolean }) {
+  const kind = useStore((s) => s.selection?.kind);
+  const layered = kind === 'text' || kind === 'overlay' || kind === 'filter' || kind === 'audio';
   return (
+    <>
+    {layered && (
+      <div className="group btn-row">
+        <button onClick={() => moveSelectionTrack(1)} title="На дорожку выше — поверх остальных (Ctrl+])">
+          ↑ Слой выше
+        </button>
+        <button onClick={() => moveSelectionTrack(-1)} title="На дорожку ниже (Ctrl+[)">
+          ↓ Слой ниже
+        </button>
+      </div>
+    )}
     <div className="group btn-row">
       {dup && <button onClick={duplicateSelection}>Дублировать <span className="kbd">Ctrl+D</span></button>}
       <button className="danger" onClick={deleteSelection}>
         Удалить <span className="kbd">Del</span>
       </button>
     </div>
+    </>
   );
 }
 
@@ -126,6 +145,7 @@ function ActorPanel({ a, scene }: { a: Actor; scene: Scene }) {
   const under = a.actions.find((c) => local >= c.start && local < c.start + c.duration);
   const set = (fn: (a: Draft<Actor>) => void, live = false) => (live ? editLive : edit)((p) => fn(actorDraft(p, a.id)!));
   const autoKey = useStore((s) => s.autoKey);
+  const acts = actionsFor(a.variant);
   const transform = (patch: { x?: number; z?: number; y?: number; ry?: number }) =>
     set((d) => writeActorTransform(d, local, patch, st().autoKey), true);
 
@@ -138,7 +158,17 @@ function ActorPanel({ a, scene }: { a: Actor; scene: Scene }) {
         <input type="text" value={a.name} onChange={(e) => set((d) => void (d.name = e.target.value), true)} />
       </Field>
       <Field label="Фигура">
-        <Seg value={a.variant} options={[['man', 'Он'], ['woman', 'Она']]} onChange={(v) => set((d) => void (d.variant = v))} />
+        <select value={a.variant} onChange={(e) => set((d) => void (d.variant = e.target.value as FigureVariant))}>
+          {(['human', 'quad'] as const).map((r) => (
+            <optgroup key={r} label={r === 'human' ? 'Люди' : 'Животные'}>
+              {VARIANTS.filter((v) => v.rig === r).map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
       </Field>
       <Field label="Цвет">
         <Swatches value={a.color} onChange={(c) => set((d) => void (d.color = c ?? d.color))} />
@@ -149,11 +179,11 @@ function ActorPanel({ a, scene }: { a: Actor; scene: Scene }) {
 
       <div className="group">
         <div className="section-title">Анимация — в позицию плейхеда</div>
-        {ACTION_GROUPS.map((g) => (
+        {ACTION_GROUPS.filter((g) => acts.some((x) => x.group === g)).map((g) => (
           <div key={g} style={{ marginBottom: 8 }}>
             <div className="hint" style={{ margin: '4px 0' }}>{g}</div>
             <div className="anim-grid">
-              {ACTIONS.filter((x) => x.group === g).map((x) => (
+              {acts.filter((x) => x.group === g).map((x) => (
                 <button key={x.id} className={under?.type === x.id ? 'cur' : ''} onClick={() => addActionAtPlayhead(a.id, x.id)} title={under ? 'Заменить текущую анимацию' : 'Добавить анимацию'}>
                   <span className="ic">{x.icon}</span>
                   {x.label}
@@ -225,7 +255,7 @@ function ActionPanel({ c, a }: { c: ActionClip; a: Actor }) {
         <select value={c.type} onChange={(e) => set((d) => void (d.type = e.target.value))}>
           {ACTION_GROUPS.map((g) => (
             <optgroup key={g} label={g}>
-              {ACTIONS.filter((x) => x.group === g).map((x) => (
+              {ACTIONS.filter((x) => x.group === g && (actionFits(x, a.variant) || x.id === c.type)).map((x) => (
                 <option key={x.id} value={x.id}>
                   {x.label}
                 </option>
@@ -373,7 +403,7 @@ function ScenePanel({ s }: { s: Scene }) {
   const sel = useStore((x) => x.selection);
   return (
     <>
-      <Title chip={`Сцена ${idx + 1}`} title={s.name} />
+      <Title chip={s.kind === 'blank' ? `Кадр ${idx + 1}` : `Сцена ${idx + 1}`} title={s.name} />
       <Field label="Название">
         <input type="text" value={s.name} onChange={(e) => set((d) => void (d.name = e.target.value), true)} />
       </Field>
@@ -383,6 +413,16 @@ function ScenePanel({ s }: { s: Scene }) {
       <Field label="Переход">
         <Seg value={s.transition} options={[['cut', 'Склейка'], ['fade-black', 'Чёрный'], ['fade-white', 'Белый']]} onChange={(v) => set((d) => void (d.transition = v))} />
       </Field>
+      {s.kind === 'blank' ? (
+        <>
+          <Field label="Цвет фона">
+            <Swatches value={s.background} onChange={(c) => set((d) => void (d.background = c ?? d.background))} />
+          </Field>
+          <div className="hint" style={{ marginBottom: 10 }}>
+            Пустой кадр без 3D: добавьте фото или видео (вкладка «Медиа»), текст и стикеры — они лягут поверх с позиции плейхеда.
+          </div>
+        </>
+      ) : (
       <Field label="Фон">
         <input type="color" value={s.background} onFocus={() => st().checkpoint()} onChange={(e) => set((d) => void (d.background = e.target.value), true)} />
         <span className="hint">пол</span>
@@ -391,11 +431,13 @@ function ScenePanel({ s }: { s: Scene }) {
           <input type="checkbox" checked={s.grid} onChange={(e) => set((d) => void (d.grid = e.target.checked))} /> сетка
         </label>
       </Field>
+      )}
       <div className="btn-row">
         <button disabled={idx === 0} onClick={() => moveScene(s.id, -1)}>← Раньше</button>
         <button disabled={idx === count - 1} onClick={() => moveScene(s.id, 1)}>Позже →</button>
       </div>
 
+      {s.kind !== 'blank' && (
       <div className="group">
         <div className="section-title">Камера</div>
         <div className="hint" style={{ marginBottom: 8 }}>
@@ -416,6 +458,9 @@ function ScenePanel({ s }: { s: Scene }) {
         )}
       </div>
 
+      )}
+
+      {s.kind !== 'blank' && (
       <div className="group">
         <div className="section-title">В сцене</div>
         <div className="list">
@@ -432,6 +477,7 @@ function ScenePanel({ s }: { s: Scene }) {
           ))}
         </div>
       </div>
+      )}
       {sel?.kind === 'scene' && <Footer />}
       {sel?.kind !== 'scene' && (
         <div className="group btn-row">
@@ -491,26 +537,213 @@ function CamKeyPanel({ k, s }: { k: CameraKey; s: Scene }) {
 
 function TextPanel({ c }: { c: TextClip }) {
   const set = (fn: (d: Draft<TextClip>) => void, live = true) => (live ? editLive : edit)((p) => fn(p.texts.find((x) => x.id === c.id)!));
+  const bg = c.bg !== undefined ? c.bg : c.style === 'caption' ? '#14161c' : null;
   return (
     <>
       <Title chip="Текст" title={c.text.split('\n')[0] || 'Текст'} />
-      <textarea value={c.text} onFocus={() => st().checkpoint()} onChange={(e) => set((d) => void (d.text = e.target.value))} style={{ marginBottom: 10 }} />
-      <Field label="Стиль">
-        <Seg value={c.style} options={[['caption', 'Субтитр'], ['title', 'Заголовок'], ['plain', 'Простой']]} onChange={(v) => set((d) => void (d.style = v), false)} />
+      <textarea
+        className="text-edit"
+        value={c.text}
+        onFocus={() => st().checkpoint()}
+        onChange={(e) => set((d) => void (d.text = e.target.value))}
+        style={{ fontFamily: `"${c.font ?? DEFAULT_FONT}"`, fontWeight: c.bold === false ? 400 : 700, fontStyle: c.italic ? 'italic' : undefined }}
+      />
+      <Field label="Шрифт">
+        <select value={c.font ?? DEFAULT_FONT} onChange={(e) => set((d) => void (d.font = e.target.value), false)} style={{ fontFamily: `"${c.font ?? DEFAULT_FONT}"` }}>
+          {FONTS.map((f) => (
+            <option key={f.id} value={f.id} style={{ fontFamily: `"${f.id}"` }}>
+              {f.label}
+            </option>
+          ))}
+        </select>
       </Field>
-      <Field label="Где">
-        <Seg value={c.position} options={[['top', 'Сверху'], ['center', 'Центр'], ['bottom', 'Снизу']]} onChange={(v) => set((d) => void (d.position = v), false)} />
+      <Field label="Начертание">
+        <div className="seg">
+          <button className={c.bold !== false ? 'active' : ''} style={{ fontWeight: 800 }} onClick={() => set((d) => void (d.bold = d.bold === false ? true : false), false)}>
+            Ж
+          </button>
+          <button className={c.italic ? 'active' : ''} style={{ fontStyle: 'italic' }} onClick={() => set((d) => void (d.italic = !d.italic), false)}>
+            К
+          </button>
+          {(['left', 'center', 'right'] as const).map((a) => (
+            <button key={a} className={(c.align ?? 'center') === a ? 'active' : ''} onClick={() => set((d) => void (d.align = a), false)}>
+              {a === 'left' ? '⇤' : a === 'center' ? '↔' : '⇥'}
+            </button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Размер">
+        <Slider value={c.size} min={0.3} max={4} onChange={(v) => set((d) => void (d.size = v))} fmt={(v) => `${Math.round(v * 100)}%`} />
+      </Field>
+      <Field label="Интервал">
+        <Slider value={c.letterSpacing ?? 0} min={-0.05} max={0.4} step={0.01} onChange={(v) => set((d) => void (d.letterSpacing = v))} fmt={(v) => v.toFixed(2)} />
       </Field>
       <Field label="Цвет">
         <Swatches value={c.color} onChange={(v) => set((d) => void (d.color = v ?? '#ffffff'), false)} />
       </Field>
-      <Field label="Размер">
-        <Slider value={c.size} min={0.4} max={3} onChange={(v) => set((d) => void (d.size = v))} fmt={(v) => `${Math.round(v * 100)}%`} />
+      <Field label="Обводка">
+        <input type="checkbox" checked={!!c.stroke && (c.strokeWidth ?? 0) > 0} onChange={(e) => set((d) => void ((d.stroke = e.target.checked ? d.stroke ?? '#111111' : null), (d.strokeWidth = e.target.checked ? d.strokeWidth || 1 : 0)), false)} />
+        {c.stroke && (c.strokeWidth ?? 0) > 0 && (
+          <>
+            <input type="color" value={c.stroke} onFocus={() => st().checkpoint()} onChange={(e) => set((d) => void (d.stroke = e.target.value))} />
+            <Slider value={c.strokeWidth ?? 1} min={0.2} max={3} onChange={(v) => set((d) => void (d.strokeWidth = v))} />
+          </>
+        )}
       </Field>
+      <Field label="Подложка">
+        <input type="checkbox" checked={!!bg} onChange={(e) => set((d) => void ((d.bg = e.target.checked ? '#14161c' : null), (d.bgOpacity = d.bgOpacity ?? 0.75)), false)} />
+        {bg && (
+          <>
+            <input type="color" value={bg} onFocus={() => st().checkpoint()} onChange={(e) => set((d) => void (d.bg = e.target.value))} />
+            <Slider value={c.bgOpacity ?? (c.style === 'caption' ? 0.72 : 1)} min={0.1} max={1} onChange={(v) => set((d) => void (d.bgOpacity = v))} fmt={(v) => `${Math.round(v * 100)}%`} />
+          </>
+        )}
+      </Field>
+      <Field label="Тень">
+        <input type="checkbox" checked={c.shadow ?? c.style === 'plain'} onChange={(e) => set((d) => void (d.shadow = e.target.checked), false)} />
+      </Field>
+      <Field label="Анимация">
+        <select value={c.anim ?? 'fade'} onChange={(e) => set((d) => void (d.anim = e.target.value as TextAnim), false)}>
+          <option value="none">Без анимации</option>
+          <option value="fade">Проявление</option>
+          <option value="pop">Выпрыгивание</option>
+          <option value="slide">Выезд снизу</option>
+          <option value="type">Печатная машинка</option>
+        </select>
+      </Field>
+      <Field label="Где">
+        <Seg
+          value={c.x !== undefined ? ('free' as const) : c.position}
+          options={[['top', 'Сверху'], ['center', 'Центр'], ['bottom', 'Снизу'], ['free', 'Своё']]}
+          onChange={(v) =>
+            set((d) => {
+              if (v === 'free') {
+                d.x = d.x ?? 0.5;
+                d.y = d.y ?? 0.5;
+              } else {
+                d.position = v;
+                delete d.x;
+                delete d.y;
+              }
+            }, false)
+          }
+        />
+      </Field>
+      <div className="hint" style={{ marginBottom: 8 }}>
+        Текст можно двигать мышью прямо в кадре (позиция станет «Своё»), тянуть за круглый уголок — размер.
+      </div>
       <Field label="Начало / длина">
         <Num value={c.start} min={0} onChange={(v) => set((d) => void (d.start = Math.max(0, v)))} />
         <Num value={c.duration} min={0.2} onChange={(v) => set((d) => void (d.duration = Math.max(0.2, v)))} />
       </Field>
+      <Footer />
+    </>
+  );
+}
+
+// ---------- наложение: фото, видео, стикер ----------
+
+const OVERLAY_ANIMS: [OverlayAnim, string][] = [
+  ['none', 'Нет'], ['fade', 'Проявление'], ['pop', 'Выпрыгивание'], ['slide', 'Выезд'],
+  ['pulse', 'Пульс'], ['bounce', 'Прыжки'], ['spin', 'Вращение'], ['wiggle', 'Покачивание'],
+];
+
+function OverlayPanel({ o }: { o: Overlay }) {
+  const set = (fn: (d: Draft<Overlay>) => void, live = true) => (live ? editLive : edit)((p) => fn(p.overlays.find((x) => x.id === o.id)!));
+  const project = useStore((s) => s.project);
+  const asset = o.type === 'media' ? project.mediaAssets.find((a) => a.id === o.assetId) : undefined;
+  const sticker = o.sticker ? STICKER_MAP[o.sticker] : undefined;
+  const isVideo = asset?.type === 'video';
+  const title = asset ? asset.name : sticker ? `Стикер ${sticker.emoji ?? sticker.label}` : 'Наложение';
+  const coverScale = () => {
+    if (!asset) return 1;
+    const A = ASPECTS[project.aspect];
+    return Math.max(1, asset.width / asset.height / A);
+  };
+  return (
+    <>
+      <Title chip={asset ? (isVideo ? 'Видео' : 'Фото') : 'Стикер'} title={title} />
+      <Field label="Размер">
+        <Slider value={o.scale} min={0.03} max={3} onChange={(v) => set((d) => void (d.scale = v))} fmt={(v) => `${Math.round(v * 100)}%`} />
+      </Field>
+      {asset && (
+        <div className="btn-row" style={{ marginBottom: 8 }}>
+          <button onClick={() => set((d) => void Object.assign(d, { x: 0.5, y: 0.5, rotation: 0, scale: Math.min(1, asset.width / asset.height / ASPECTS[project.aspect]) }), false)}>Вписать</button>
+          <button onClick={() => set((d) => void Object.assign(d, { x: 0.5, y: 0.5, rotation: 0, scale: coverScale() }), false)}>Заполнить кадр</button>
+        </div>
+      )}
+      <Field label="Поворот">
+        <Slider value={o.rotation} min={-180} max={180} step={1} onChange={(v) => set((d) => void (d.rotation = v))} fmt={(v) => `${Math.round(v)}°`} />
+      </Field>
+      <Field label="Прозрачн.">
+        <Slider value={o.opacity} min={0} max={1} onChange={(v) => set((d) => void (d.opacity = v))} fmt={(v) => `${Math.round(v * 100)}%`} />
+      </Field>
+      <Field label="X / Y, %">
+        <Num value={o.x * 100} step={1} onChange={(v) => set((d) => void (d.x = v / 100))} />
+        <Num value={o.y * 100} step={1} onChange={(v) => set((d) => void (d.y = v / 100))} />
+      </Field>
+      {sticker && !sticker.emoji && (
+        <Field label="Цвет">
+          <Swatches value={o.color ?? sticker.color ?? '#ffffff'} onChange={(v) => set((d) => void (d.color = v ?? undefined), false)} />
+        </Field>
+      )}
+      <Field label="Анимация">
+        <select value={o.anim} onChange={(e) => set((d) => void (d.anim = e.target.value as OverlayAnim), false)}>
+          {OVERLAY_ANIMS.map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {isVideo && (
+        <>
+          <Field label="Громкость">
+            <Slider value={o.volume} min={0} max={2} onChange={(v) => set((d) => void (d.volume = v))} fmt={(v) => (v === 0 ? 'выкл' : `${Math.round(v * 100)}%`)} />
+          </Field>
+          <Field label="Обрезка, с">
+            <Num value={o.offset} min={0} onChange={(v) => set((d) => void (d.offset = Math.max(0, Math.min(v, (asset?.duration ?? 1e9) - 0.1))))} />
+          </Field>
+        </>
+      )}
+      <Field label="Начало / длина">
+        <Num value={o.start} min={0} onChange={(v) => set((d) => void (d.start = Math.max(0, v)))} />
+        <Num value={o.duration} min={0.1} onChange={(v) => set((d) => void (d.duration = Math.max(0.1, isVideo ? Math.min(v, (asset?.duration ?? 1e9) - d.offset) : v)))} />
+      </Field>
+      <div className="hint">В кадре: тащите мышью — двигать, круглый уголок — размер. Наложения лежат на дорожках «Медиа» над текстом.</div>
+      <Footer />
+    </>
+  );
+}
+
+// ---------- фильтр ----------
+
+function FilterPanel({ f }: { f: FilterClip }) {
+  const set = (fn: (d: Draft<FilterClip>) => void, live = true) => (live ? editLive : edit)((p) => fn(p.filters.find((x) => x.id === f.id)!));
+  const total = useStore((s) => totalDuration(s.project));
+  return (
+    <>
+      <Title chip="Фильтр" title={FILTER_MAP[f.filter]?.label ?? f.filter} />
+      <Field label="Фильтр">
+        <select value={f.filter} onChange={(e) => set((d) => void (d.filter = e.target.value as FilterKind), false)}>
+          {FILTERS.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Сила">
+        <Slider value={f.amount} min={0} max={1} onChange={(v) => set((d) => void (d.amount = v))} fmt={(v) => `${Math.round(v * 100)}%`} />
+      </Field>
+      <Field label="Начало / длина">
+        <Num value={f.start} min={0} onChange={(v) => set((d) => void (d.start = Math.max(0, v)))} />
+        <Num value={f.duration} min={0.2} onChange={(v) => set((d) => void (d.duration = Math.max(0.2, v)))} />
+      </Field>
+      <div className="btn-row" style={{ marginBottom: 8 }}>
+        <button onClick={() => set((d) => void Object.assign(d, { start: 0, duration: Math.max(1, total) }), false)}>На всё видео</button>
+      </div>
+      <div className="hint">Фильтр действует на картинку, фото и видео, но не на текст и стикеры. Края клипа плавно проявляются.</div>
       <Footer />
     </>
   );
@@ -596,6 +829,12 @@ export function Inspector() {
         break;
       case 'audio':
         body = <AudioPanel c={project.audioClips.find((x) => x.id === sel.id)!} />;
+        break;
+      case 'overlay':
+        body = <OverlayPanel o={project.overlays.find((x) => x.id === sel.id)!} />;
+        break;
+      case 'filter':
+        body = <FilterPanel f={project.filters.find((x) => x.id === sel.id)!} />;
         break;
     }
   } else {
