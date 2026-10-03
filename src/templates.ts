@@ -177,4 +177,41 @@ export const TEMPLATES: SceneTemplate[] = [
       return s;
     },
   },
+  // ---------- вечеринка: все танцуют и прыгают в бит 120 BPM ----------
+  {
+    name: 'Вечеринка',
+    build: () => {
+      const s = newScene('Вечеринка', { duration: 8, floor: '#efeaf0', background: '#efeaf0', grid: true });
+      s.props = props([
+        ['rug', 0, 0, PI / 4, MAROON, 1.6], ['sofa', -0.2, -4.3, 0, NAVY, 1], ['lamp', -2.4, -4.4, 0.6], ['lamp', 2.1, -4.4, -0.6],
+        ['window_wall', 0, -5.2, 0, '#e2dce6', 1.1], ['plant', -4.4, -3.6, 0, null, 1.3], ['plant', 4.4, -3.4, 1, null, 1.3],
+        ['box', -3.9, 1.6, 0.4, CHARCOAL, 1.4], ['box', 3.9, 1.4, -0.4, CHARCOAL, 1.4], ['pizza', -3.6, -1.6, 0.4], ['bottle', -3.3, -1.9],
+      ]);
+      // 120 BPM: доля = 0.5 с; танец подпрыгивает дважды за период → скорость 1
+      const crowd: [string, boolean, string, number, number, string, number][] = [
+        ['Гитарист', false, NAVY, 0, -0.4, 'guitar', 1],
+        ['Танцор 1', true, MAROON, -1.9, -1.4, 'dance', 1],
+        ['Танцор 2', false, CHARCOAL, 1.9, -1.4, 'dance', 1],
+        ['Прыгун 1', false, MAROON, -2.4, 0.9, 'jump', 1.1],
+        ['Прыгун 2', true, NAVY, 2.4, 0.9, 'jump', 1.1],
+        ['Ура 1', true, '#4a6a5a', -0.9, 2.2, 'cheer', 1],
+        ['Ура 2', false, '#7d8899', 1.0, 2.2, 'clap', 1],
+        ['Танцор 3', true, '#b5873a', 0, 3.5, 'dance', 1],
+      ];
+      s.actors = crowd.map(([name, woman, color, x, z, a, sp], i) => {
+        const face = PI / 4 - x * 0.1 + z * 0.05; // к зрителю, чуть разворачиваясь к центру
+        // вторая половина — смена движений, чтобы было живее
+        const second = a === 'dance' ? 'jump' : a === 'jump' ? 'dance' : a === 'cheer' ? 'dance' : a === 'clap' ? 'cheer' : a;
+        return person(name, woman, color, x, z, face, [act(a, 0, 4, sp), act(second, 4 + (i % 2) * 0.25, 4, second === 'jump' ? 1.1 : 1)]);
+      });
+      // камера облетает компанию и «качается» в бит
+      s.cameraKeys = [];
+      for (let i = 0; i <= 16; i++) {
+        const t = i * 0.5;
+        const az = PI / 4 - 0.6 + (1.2 * t) / 8;
+        s.cameraKeys.push(cam(t, 0, 0.8, (i % 2 ? 1.0 : 1.07) * (1.25 + 0.3 * (t / 8)), az, 0.5 + 0.08 * Math.sin(t)));
+      }
+      return s;
+    },
+  },
 ];
