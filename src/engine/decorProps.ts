@@ -1077,6 +1077,20 @@ const ROOM: PropDef[] = [
     },
   },
   {
+    kind: 'fruit_bowl', label: 'Фрукты', icon: '🍎', color: '#f1ece2', radius: 0.2,
+    build: (c) => {
+      const g = new THREE.Group();
+      add(g, lathe([[0, 0], [0.06, 0], [0.07, 0.015], [0.16, 0.07], [0.165, 0.08], [0.15, 0.08], [0, 0.03]], 32), mat(c, 0.3, { side: THREE.DoubleSide }));
+      const fr: [number, number, number, number, string][] = [[0.0, 0.08, 0.0, 0.05, '#e24a2e'], [0.07, 0.075, 0.03, 0.048, '#f39a1e'], [-0.06, 0.075, 0.04, 0.046, '#9ccc3c'], [0.02, 0.075, -0.07, 0.047, '#c8312e'], [-0.03, 0.12, -0.02, 0.045, '#f39a1e']];
+      for (const [x, y, z, r, col] of fr) add(g, new THREE.SphereGeometry(r, 16, 12), mat(col, 0.45), x, y, z);
+      // банан
+      add(g, new THREE.TorusGeometry(0.08, 0.018, 8, 16, 1.6), mat('#f2d14a', 0.5), -0.02, 0.1, 0.06, -0.9, 0.4, 0);
+      // зелень сверху
+      add(g, leafGeo(0.06, 0.02, 0.2), new THREE.MeshStandardMaterial({ color: '#4f8a3c', side: THREE.DoubleSide }), 0.0, 0.125, 0.0, -0.4, 0, 0);
+      return g;
+    },
+  },
+  {
     kind: 'round_rug', label: 'Круглый ковёр', icon: '⭕', color: '#c9a86a', radius: 1.0,
     build: (c) => {
       const g = new THREE.Group();
